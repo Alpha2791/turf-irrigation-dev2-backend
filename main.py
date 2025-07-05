@@ -181,6 +181,7 @@ def get_predicted_moisture():
         df_combined = df_weather.merge(df_irrig, how="left", left_index=True, right_index=True)
         df_combined["irrigation_mm"] = df_combined["irrigation_mm"].fillna(0)
         df_combined = df_combined.sort_index()
+        df = df_combined
 
 
         print("[INFO] Forecast dataframe shape:", df.shape)
