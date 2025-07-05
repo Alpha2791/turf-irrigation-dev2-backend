@@ -7,7 +7,6 @@ import pandas as pd
 import os
 from models import MoistureLog, IrrigationLog, WeatherHistory, PredictionMeta
 from database import Base, engine, SessionLocal
-import math
 
 app = FastAPI()
 
@@ -21,7 +20,7 @@ app.add_middleware(
 
 LATITUDE = 50.415642
 LONGITUDE = -5.092041
-ELEVATION = 39  # metres
+ELEVATION = 39
 VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
 
 @app.on_event("startup")
@@ -75,22 +74,6 @@ def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: 
     db.close()
     return {"status": "irrigation logged"}
 
-def calculate_et_fao56(temp, humidity, windspeed, solar_radiation, pressure=101.3, elevation=ELEVATION):
-    # Constants
-    Gsc = 0.0820  # MJ m^-2 min^-1
-    gamma = 0.665e-3 * pressure  # kPa/°C
-    lambda_ = 2.45  # latent heat of vaporization [MJ/kg]
-    
-    es = 0.6108 * math.exp((17.27 * temp) / (temp + 237.3))  # saturation vapour pressure
-    ea = es * (humidity / 100)  # actual vapour pressure
-    delta = (4098 * es) / ((temp + 237.3) ** 2)  # slope of saturation vapour pressure curve
-    
-    Rn = solar_radiation * 0.0036  # convert W/m² to MJ/m²/hr
-    u2 = windspeed  # assumed at 2m
-
-    et0 = (0.408 * delta * Rn + gamma * (900 / (temp + 273)) * u2 * (es - ea)) / (delta + gamma * (1 + 0.34 * u2))
-    return round(et0, 3)
-
 @app.get("/predicted-moisture")
 def predicted_moisture():
     return get_predicted_moisture()
@@ -133,19 +116,22 @@ def get_predicted_moisture():
                 raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
 
+                # Extract weather values
                 temp = hour.get("temp", 0)
                 humidity = hour.get("humidity", 0)
                 windspeed = hour.get("windspeed", 0)
                 solar_radiation = hour.get("solarradiation", 0) or 0
                 rainfall = hour.get("precip", 0) or 0
 
-                et = calculate_et_fao56(temp, humidity, windspeed, solar_radiation)
+                # ✅ Simplified ET Calculation
+                # Visual Crossing solar radiation is W/m²
+                # Convert to ET (mm/hour) using radiation-only approximation
+                et = round(0.408 * solar_radiation / 1000, 3)
 
                 weather_data.append({
                     "timestamp": raw_ts,
                     "ET_mm_hour": et,
-                    "rainfall_mm": rainfall,
-                    "irrigation_mm": 0  # to be filled later
+                    "rainfall_mm": rainfall
                 })
 
                 if not db.query(WeatherHistory).filter_by(timestamp=timestamp).first():
@@ -168,28 +154,21 @@ def get_predicted_moisture():
             set_last_weather_timestamp(db, new_ts)
         db.close()
 
-        # Convert weather data to DataFrame
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"])
         df_weather.set_index("timestamp", inplace=True)
 
-        # Drop irrigation_mm if it already exists in weather data
-        if "irrigation_mm" in df_weather.columns:
-            df_weather.drop(columns=["irrigation_mm"], inplace=True)
-
-        # Merge irrigation data (avoiding column name conflicts)
         df_combined = df_weather.merge(df_irrig, how="left", left_index=True, right_index=True)
         df_combined["irrigation_mm"] = df_combined["irrigation_mm"].fillna(0)
         df_combined = df_combined.sort_index()
         df = df_combined
-
 
         print("[INFO] Forecast dataframe shape:", df.shape)
 
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
 
-        for ts, row in df_combined.iterrows():
+        for ts, row in df.iterrows():
             et_mm = row["ET_mm_hour"]
             rainfall_mm = row["rainfall_mm"]
             irrigation_mm = row["irrigation_mm"]
