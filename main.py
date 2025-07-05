@@ -168,19 +168,27 @@ def get_predicted_moisture():
             set_last_weather_timestamp(db, new_ts)
         db.close()
 
+        # Convert weather data to DataFrame
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"])
         df_weather.set_index("timestamp", inplace=True)
 
-        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
-        df = df.sort_index()
+        # Drop irrigation_mm if it already exists in weather data
+        if "irrigation_mm" in df_weather.columns:
+            df_weather.drop(columns=["irrigation_mm"], inplace=True)
+
+        # Merge irrigation data (avoiding column name conflicts)
+        df_combined = df_weather.merge(df_irrig, how="left", left_index=True, right_index=True)
+        df_combined["irrigation_mm"] = df_combined["irrigation_mm"].fillna(0)
+        df_combined = df_combined.sort_index()
+
 
         print("[INFO] Forecast dataframe shape:", df.shape)
 
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
 
-        for ts, row in df.iterrows():
+        for ts, row in df_combined.iterrows():
             et_mm = row["ET_mm_hour"]
             rainfall_mm = row["rainfall_mm"]
             irrigation_mm = row["irrigation_mm"]
